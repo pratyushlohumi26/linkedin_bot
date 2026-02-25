@@ -1,0 +1,6 @@
+requests
+beautifulsoup4
+anthropic
+tweepy
+pyTelegramBotAPI
+pytube
