@@ -50,44 +50,55 @@ class ContentGenerator:
             "max_tokens": 1200,
         }
 
-        while True:
-            try:
-                response = self._client.chat.completions.create(**request)
-                break
-            except BadRequestError as err:
-                err_text = str(err)
+        for attempt in range(1, 4):
+            while True:
+                try:
+                    response = self._client.chat.completions.create(**request)
+                    break
+                except BadRequestError as err:
+                    err_text = str(err)
 
-                if (
-                    "max_tokens" in request
-                    and "max_tokens" in err_text
-                    and "max_completion_tokens" in err_text
-                ):
-                    logger.info(
-                        "Retrying completion with max_completion_tokens for model %s",
-                        self._llm_config.model,
-                    )
-                    request.pop("max_tokens", None)
-                    request["max_completion_tokens"] = 1200
-                    continue
+                    if (
+                        "max_tokens" in request
+                        and "max_tokens" in err_text
+                        and "max_completion_tokens" in err_text
+                    ):
+                        logger.info(
+                            "Retrying completion with max_completion_tokens for model %s",
+                            self._llm_config.model,
+                        )
+                        request.pop("max_tokens", None)
+                        request["max_completion_tokens"] = 1200
+                        continue
 
-                if (
-                    "temperature" in request
-                    and "temperature" in err_text
-                    and "default (1) value is supported" in err_text
-                ):
-                    logger.info(
-                        "Retrying completion without explicit temperature for model %s",
-                        self._llm_config.model,
-                    )
-                    request.pop("temperature", None)
-                    continue
+                    if (
+                        "temperature" in request
+                        and "temperature" in err_text
+                        and "default (1) value is supported" in err_text
+                    ):
+                        logger.info(
+                            "Retrying completion without explicit temperature for model %s",
+                            self._llm_config.model,
+                        )
+                        request.pop("temperature", None)
+                        continue
 
-                raise
+                    raise
 
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("Model returned empty content.")
-        return content
+            content = _extract_content_text(response.choices[0].message)
+            if content:
+                return content
+
+            refusal = getattr(response.choices[0].message, "refusal", None)
+            if refusal:
+                raise ValueError(f"Model refused request: {refusal}")
+
+            logger.warning(
+                "Model returned empty content (attempt %s/3); retrying.",
+                attempt,
+            )
+
+        raise ValueError("Model returned empty content after retries.")
 
     def generate_linkedin_variants(
         self,
@@ -156,6 +167,27 @@ def _normalize_hashtag(tag: str) -> str:
     if not cleaned:
         raise ValueError(f"Invalid hashtag value: {tag!r}")
     return f"#{cleaned}"
+
+
+def _extract_content_text(message: Any) -> str | None:
+    raw_content = getattr(message, "content", None)
+    if isinstance(raw_content, str):
+        text = raw_content.strip()
+        return text or None
+
+    if isinstance(raw_content, list):
+        parts: list[str] = []
+        for item in raw_content:
+            if isinstance(item, dict):
+                text = item.get("text")
+            else:
+                text = getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        if parts:
+            return "\n".join(parts)
+
+    return None
 
 
 def _parse_json_like(raw_payload: str) -> Any:
