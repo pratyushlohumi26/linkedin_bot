@@ -23,6 +23,8 @@ from telegram_bot.prompts import (
 
 logger = logging.getLogger(__name__)
 _HASHTAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_]+)")
+_DEFAULT_COMPLETION_TOKEN_BUDGET = 1800
+_MAX_COMPLETION_TOKEN_BUDGET = 3200
 
 
 class ContentGenerator:
@@ -47,10 +49,10 @@ class ContentGenerator:
                 {"role": "user", "content": user_message},
             ],
             "temperature": 0.7,
-            "max_tokens": 1200,
+            "max_tokens": _DEFAULT_COMPLETION_TOKEN_BUDGET,
         }
 
-        for attempt in range(1, 4):
+        for attempt in range(1, 5):
             while True:
                 try:
                     response = self._client.chat.completions.create(**request)
@@ -67,8 +69,8 @@ class ContentGenerator:
                             "Retrying completion with max_completion_tokens for model %s",
                             self._llm_config.model,
                         )
-                        request.pop("max_tokens", None)
-                        request["max_completion_tokens"] = 1200
+                        budget = int(request.pop("max_tokens", _DEFAULT_COMPLETION_TOKEN_BUDGET))
+                        request["max_completion_tokens"] = budget
                         continue
 
                     if (
@@ -93,8 +95,16 @@ class ContentGenerator:
             if refusal:
                 raise ValueError(f"Model refused request: {refusal}")
 
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason == "length" and _increase_completion_budget(request):
+                logger.warning(
+                    "Model hit length limit with empty content (attempt %s/4); increased token budget and retrying.",
+                    attempt,
+                )
+                continue
+
             logger.warning(
-                "Model returned empty content (attempt %s/3); retrying.",
+                "Model returned empty content (attempt %s/4); retrying.",
                 attempt,
             )
 
@@ -167,6 +177,17 @@ def _normalize_hashtag(tag: str) -> str:
     if not cleaned:
         raise ValueError(f"Invalid hashtag value: {tag!r}")
     return f"#{cleaned}"
+
+
+def _increase_completion_budget(request: dict[str, Any]) -> bool:
+    token_field = "max_completion_tokens" if "max_completion_tokens" in request else "max_tokens"
+
+    current_budget = int(request.get(token_field, _DEFAULT_COMPLETION_TOKEN_BUDGET))
+    if current_budget >= _MAX_COMPLETION_TOKEN_BUDGET:
+        return False
+
+    request[token_field] = min(current_budget + 600, _MAX_COMPLETION_TOKEN_BUDGET)
+    return True
 
 
 def _extract_content_text(message: Any) -> str | None:
