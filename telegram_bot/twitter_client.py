@@ -1,30 +1,56 @@
 #!/usr/bin/env python3
-"""Twitter posting helper using Tweepy."""
+"""X/Twitter posting helper using Tweepy."""
 
-import time
+from __future__ import annotations
+
 import logging
+import time
+from collections.abc import Mapping
 
 import tweepy
-from api_key import x_api_key, x_api_secret_key, x_access_token, x_access_token_secret
+
+from telegram_bot.config import XCredentials
 
 logger = logging.getLogger(__name__)
+MAX_TWEET_LENGTH = 280
 
-def post_twitter(tweet_thread: dict):
-    """Post a sequence of tweets (thread) and return the final tweet URL."""
-    client = tweepy.Client(
-        consumer_key=x_api_key,
-        consumer_secret=x_api_secret_key,
-        access_token=x_access_token,
-        access_token_secret=x_access_token_secret,
-    )
-    for i, tweet in tweet_thread.items():
-        thread = f"[{i}/{len(tweet_thread)}] " + tweet
-        print("--> ", thread)
-        response = client.create_tweet(text=thread)
-        time.sleep(0.5)
-    try:
-        tweet_id = response.data['id']
-        twitter_link = f"https://x.com/PratyushLohumi/status/{tweet_id}"
-        return twitter_link
-    except Exception as e:
-        return e
+
+class TwitterPublisher:
+    """Posts thread content to X/Twitter."""
+
+    def __init__(self, credentials: XCredentials):
+        if not credentials.is_configured:
+            raise ValueError("X credentials are not fully configured.")
+
+        self._client = tweepy.Client(
+            consumer_key=credentials.api_key,
+            consumer_secret=credentials.api_secret_key,
+            access_token=credentials.access_token,
+            access_token_secret=credentials.access_token_secret,
+        )
+
+    def post_thread(self, tweet_thread: Mapping[int, str]) -> str:
+        previous_tweet_id = None
+        final_tweet_id = None
+        ordered_tweets = sorted(tweet_thread.items(), key=lambda item: item[0])
+
+        for index, tweet in ordered_tweets:
+            text = f"[{index}/{len(ordered_tweets)}] {tweet.strip()}"
+            if len(text) > MAX_TWEET_LENGTH:
+                text = text[: MAX_TWEET_LENGTH - 3] + "..."
+
+            kwargs = {"text": text}
+            if previous_tweet_id:
+                kwargs["in_reply_to_tweet_id"] = previous_tweet_id
+
+            response = self._client.create_tweet(**kwargs)
+            final_tweet_id = response.data["id"]
+            previous_tweet_id = final_tweet_id
+            time.sleep(0.5)
+
+        if not final_tweet_id:
+            raise ValueError("No tweet was created.")
+
+        link = f"https://x.com/i/web/status/{final_tweet_id}"
+        logger.info("Published X thread: %s", link)
+        return link

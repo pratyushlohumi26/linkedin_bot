@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Inline keyboard markups for Telegram bot."""
 
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 
 def feed_type_selection():
     """Buttons to select Twitter, LinkedIn, or Both."""
@@ -13,6 +14,7 @@ def feed_type_selection():
         InlineKeyboardButton("Both", callback_data="both"),
     )
     return markup
+
 
 def confirmation_selection():
     """Buttons to confirm Yes or No."""

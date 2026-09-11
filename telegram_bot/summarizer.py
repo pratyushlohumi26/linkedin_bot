@@ -1,110 +1,102 @@
 #!/usr/bin/env python3
-"""Summarization helpers for LinkedIn and X via Claude & GPT-4."""
+"""Summarization and thread generation via OpenAI or Azure OpenAI."""
+
+from __future__ import annotations
 
 import ast
+import json
 import logging
+from typing import Any
 
-from openai import OpenAI
-import anthropic
+from openai import AzureOpenAI, OpenAI
 
-from prompts import system_prompt_linkedin, system_prompt_x
-from api_key import openai_key, anthropic_api_key
+from telegram_bot.config import LLMConfig
+from telegram_bot.prompts import system_prompt_linkedin, system_prompt_x
 
 logger = logging.getLogger(__name__)
 
-client_openai = OpenAI(api_key=openai_key)
-client_claude = anthropic.Anthropic(api_key=anthropic_api_key)
 
-def summarize_with_claude_linkedin(text):
-    try:
-        message = client_claude.messages.create(
-            model="claude-3-opus-20240229",
-            max_tokens=1000,
-            temperature=0,
-            system=system_prompt_linkedin,
+class ContentGenerator:
+    """Generates LinkedIn posts and X threads from scraped blog text."""
+
+    def __init__(self, llm_config: LLMConfig):
+        self._llm_config = llm_config
+        if llm_config.provider == "azure_openai":
+            self._client = AzureOpenAI(
+                api_key=llm_config.azure_openai_api_key,
+                api_version=llm_config.azure_openai_api_version,
+                azure_endpoint=llm_config.azure_openai_endpoint,
+            )
+        else:
+            self._client = OpenAI(api_key=llm_config.openai_api_key)
+
+    def _complete(self, *, system_prompt: str, user_message: str) -> str:
+        response = self._client.chat.completions.create(
+            model=self._llm_config.model,
             messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""Here is the blogpost text scrapped from the web: {text}
-                              Just give the Post text as the response."""
-                        }
-                    ]
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
             ],
+            temperature=0.7,
+            max_tokens=1200,
         )
-        return message.content[0].text
-    except Exception as e:
-        print(f"Error generating summary: {e}")
-        return None
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("Model returned empty content.")
+        return content
 
-def call_claude_x(blog_text):
-    message = client_claude.messages.create(
-        model="claude-3-5-sonnet-20240620",
-        max_tokens=1000,
-        temperature=0,
-        system=system_prompt_x,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Here is the blogpost text scrapped from the web: ```{blog_text}```"
-                    }
-                ]
-            }
-        ],
-    )
-    str_dict = message.content[0].text
-    print("---> Output received from the model:: \n\n", str_dict)
-    try:
-        python_dict = eval(str_dict)
-        return python_dict
-    except Exception as e:
-        return e
-
-def summarize_with_gpt4_linkedin(text):
-    try:
-        response = client_openai.chat.completions.create(
-            model="gpt-4.1",
-            messages=[
-                {"role": "system", "content": [{"text": system_prompt_linkedin, "type": "text"}]},
-                {"role": "user", "content": [{"type": "text", "text": f"""Here is the blogpost text scrapped from the web: {text}
-                              Just give the Post text as the response."""}]}],
-            temperature=1,
-            max_tokens=2048,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0,
-            response_format={"type": "text"},
+    def generate_linkedin_post(self, blog_text: str) -> str:
+        answer = self._complete(
+            system_prompt=system_prompt_linkedin,
+            user_message=(
+                "Here is the scraped blog post text:\n"
+                f"{blog_text}\n\n"
+                "Return only the final LinkedIn post text."
+            ),
         )
-        answer = response.choices[0].message.content
-        cleaned_text = answer.replace('*', '')
-        return cleaned_text
-    except Exception as e:
-        print(f"Error generating summary: {e}")
-        return None
+        return answer.replace("*", "").strip()
 
-def call_gpt4_x(blog_text):
-    response = client_openai.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": [{"text": system_prompt_x, "type": "text"}]},
-            {"role": "user", "content": [{"type": "text", "text": f"Here is the blogpost text scrapped from the web: ```{blog_text}```"}]}],
-        temperature=1,
-        max_tokens=2048,
-        top_p=1,
-        frequency_penalty=0,
-        presence_penalty=0,
-        response_format={"type": "text"},
-    )
-    answer = response.choices[0].message.content
-    print("---> Output received from the model:: \n\n", answer)
+    def generate_x_thread(self, blog_text: str) -> dict[int, str]:
+        answer = self._complete(
+            system_prompt=system_prompt_x,
+            user_message=(
+                "Here is the scraped blog post text:\n"
+                f"{blog_text}\n\n"
+                "Return only a dict-like or JSON object mapping tweet positions to tweet text."
+            ),
+        )
+        return _parse_thread_payload(answer)
+
+
+def _parse_thread_payload(raw_payload: str) -> dict[int, str]:
+    payload = raw_payload.strip()
+    if payload.startswith("```"):
+        payload = payload.strip("`")
+        if payload.lower().startswith("python"):
+            payload = payload[6:].strip()
+        elif payload.lower().startswith("json"):
+            payload = payload[4:].strip()
+
+    data: Any
     try:
-        python_dict = eval(answer)
-        return python_dict
-    except Exception as e:
-        return e
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        data = ast.literal_eval(payload)
+
+    if not isinstance(data, dict):
+        raise ValueError("Thread payload must be a dictionary-like object.")
+
+    normalized: dict[int, str] = {}
+    for key, value in data.items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid thread index: {key!r}") from exc
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Invalid tweet content for index {index}.")
+        normalized[index] = value.strip()
+
+    if not normalized:
+        raise ValueError("Generated thread is empty.")
+
+    return dict(sorted(normalized.items(), key=lambda item: item[0]))
