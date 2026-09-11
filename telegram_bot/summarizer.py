@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any
 
-from openai import AzureOpenAI, OpenAI
+from openai import AzureOpenAI, BadRequestError, OpenAI
 
 from telegram_bot.config import LLMConfig
 from telegram_bot.prompts import system_prompt_linkedin, system_prompt_x
@@ -31,15 +31,50 @@ class ContentGenerator:
             self._client = OpenAI(api_key=llm_config.openai_api_key)
 
     def _complete(self, *, system_prompt: str, user_message: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self._llm_config.model,
-            messages=[
+        request = {
+            "model": self._llm_config.model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
-            temperature=0.7,
-            max_tokens=1200,
-        )
+            "temperature": 0.7,
+            "max_tokens": 1200,
+        }
+
+        while True:
+            try:
+                response = self._client.chat.completions.create(**request)
+                break
+            except BadRequestError as err:
+                err_text = str(err)
+
+                if (
+                    "max_tokens" in request
+                    and "max_tokens" in err_text
+                    and "max_completion_tokens" in err_text
+                ):
+                    logger.info(
+                        "Retrying completion with max_completion_tokens for model %s",
+                        self._llm_config.model,
+                    )
+                    request.pop("max_tokens", None)
+                    request["max_completion_tokens"] = 1200
+                    continue
+
+                if (
+                    "temperature" in request
+                    and "temperature" in err_text
+                    and "default (1) value is supported" in err_text
+                ):
+                    logger.info(
+                        "Retrying completion without explicit temperature for model %s",
+                        self._llm_config.model,
+                    )
+                    request.pop("temperature", None)
+                    continue
+
+                raise
+
         content = response.choices[0].message.content
         if not content:
             raise ValueError("Model returned empty content.")

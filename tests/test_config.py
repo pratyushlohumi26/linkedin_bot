@@ -38,6 +38,8 @@ def _clear_bot_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_load_config_openai_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_bot_env(monkeypatch)
     monkeypatch.setenv("TELEGRAM_TOKEN", "123456:token")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4.1")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
 
     config = load_config()
@@ -62,6 +64,21 @@ def test_load_config_azure_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.llm.provider == "azure_openai"
     assert config.llm.model == "gpt4o-prod"
     assert config.llm.azure_openai_endpoint == "https://example.openai.azure.com"
+
+
+def test_load_config_azure_endpoint_suffix_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_bot_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_TOKEN", "123456:token")
+    monkeypatch.setenv("LLM_PROVIDER", "azure_openai")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt4o-prod")
+
+    config = load_config()
+
+    assert config.llm.azure_openai_endpoint == "https://example.services.ai.azure.com"
 
 
 def test_webhook_mode_requires_public_url(monkeypatch: pytest.MonkeyPatch) -> None:

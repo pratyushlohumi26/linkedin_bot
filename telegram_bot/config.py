@@ -109,6 +109,15 @@ def _normalize_webhook_path(path_value: str | None) -> str:
     return path or "webhook"
 
 
+def _normalize_azure_endpoint(endpoint: str) -> str:
+    normalized = endpoint.strip().rstrip("/")
+    for suffix in ("/openai/v1", "/openai"):
+        if normalized.lower().endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    return normalized
+
+
 def load_config() -> AppConfig:
     load_dotenv()
 
@@ -126,7 +135,9 @@ def load_config() -> AppConfig:
             provider="azure_openai",
             model=_get_env("AZURE_OPENAI_DEPLOYMENT", required=True) or "",
             azure_openai_api_key=_get_env("AZURE_OPENAI_API_KEY", required=True),
-            azure_openai_endpoint=_get_env("AZURE_OPENAI_ENDPOINT", required=True),
+            azure_openai_endpoint=_normalize_azure_endpoint(
+                _get_env("AZURE_OPENAI_ENDPOINT", required=True) or ""
+            ),
             azure_openai_api_version=(
                 _get_env("AZURE_OPENAI_API_VERSION", default="2024-06-01") or "2024-06-01"
             ),

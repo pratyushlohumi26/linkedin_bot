@@ -21,8 +21,6 @@ def create_bot(config: AppConfig) -> TeleBot:
 
 def _start_polling(bot: TeleBot, config: AppConfig) -> None:
     logger.info("Starting Telegram bot in polling mode")
-    bot.enable_save_next_step_handlers(delay=2)
-    bot.load_next_step_handlers()
     bot.infinity_polling(skip_pending=config.telegram_drop_pending_updates)
 
 
