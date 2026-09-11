@@ -1,0 +1,17 @@
+services:
+  linkedin-bot:
+    container_name: linkedin-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:prod
+    env_file:
+      - .env
+    command: ["python", "main.py"]
+    restart: unless-stopped
+    volumes:
+      - ./.handler-saves:/app/.handler-saves
+      - ./.runtime:/app/.runtime
+    # Uncomment when running webhook mode and exposing port 8443 externally.
+    # ports:
+    #   - "8443:8443"

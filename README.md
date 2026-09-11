@@ -147,6 +147,34 @@ If using webhook mode, publish the configured webhook port (default `8443`):
 docker run --rm --env-file .env -p 8443:8443 linkedin-bot:latest
 ```
 
+### Production-style service (recommended)
+
+A compose service file is provided at `docker-compose.prod.yml` with:
+- `restart: unless-stopped`
+- `.env` injection
+- persistent mounts for `.handler-saves` and `.runtime`
+
+Run in background:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Check status/logs:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker logs -f linkedin-bot
+```
+
+Restart/stop/start:
+
+```bash
+docker compose -f docker-compose.prod.yml restart
+docker compose -f docker-compose.prod.yml stop
+docker compose -f docker-compose.prod.yml start
+```
+
 ---
 
 ## Project layout
