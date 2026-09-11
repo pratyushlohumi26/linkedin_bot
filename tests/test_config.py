@@ -23,6 +23,15 @@ ENV_KEYS = [
     "AZURE_OPENAI_API_VERSION",
     "AZURE_OPENAI_DEPLOYMENT",
     "LINKEDIN_TOKEN",
+    "LINKEDIN_ENABLE_FIRST_COMMENT",
+    "LINKEDIN_FIRST_COMMENT_DELAY_SECONDS",
+    "LINKEDIN_HASHTAG_CORE",
+    "LINKEDIN_HASHTAG_SECONDARY",
+    "ENABLE_RESEARCH_AGENT",
+    "SEARCH_PROVIDER",
+    "SEARCH_API_KEY",
+    "SEARCH_MAX_LINKS",
+    "PIPELINE_TELEMETRY_PATH",
     "X_API_KEY",
     "X_API_SECRET_KEY",
     "X_ACCESS_TOKEN",
@@ -49,6 +58,9 @@ def test_load_config_openai_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.telegram_webhook_path == "webhook"
     assert config.llm.provider == "openai"
     assert config.llm.model == "gpt-4.1"
+    assert config.linkedin_enable_first_comment is False
+    assert config.linkedin_hashtag_core == ("#AIEngineering", "#AIResearch", "#LLM")
+    assert config.search_provider == "tavily"
 
 
 def test_load_config_azure_openai(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,14 +117,24 @@ def test_webhook_path_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.telegram_webhook_public_url == "https://bot.example.com"
 
 
-def test_allowed_users_and_drop_pending_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_allowed_users_drop_pending_and_hashtag_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _clear_bot_env(monkeypatch)
     monkeypatch.setenv("TELEGRAM_TOKEN", "123456:token")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1001, 1002")
     monkeypatch.setenv("TELEGRAM_DROP_PENDING_UPDATES", "false")
+    monkeypatch.setenv("LINKEDIN_ENABLE_FIRST_COMMENT", "true")
+    monkeypatch.setenv("LINKEDIN_FIRST_COMMENT_DELAY_SECONDS", "12")
+    monkeypatch.setenv("LINKEDIN_HASHTAG_CORE", "ai engineering,#AIResearch, #AIResearch")
+    monkeypatch.setenv("SEARCH_MAX_LINKS", "10")
 
     config = load_config()
 
     assert config.allowed_user_ids == {1001, 1002}
     assert config.telegram_drop_pending_updates is False
+    assert config.linkedin_enable_first_comment is True
+    assert config.linkedin_first_comment_delay_seconds == 12
+    assert config.linkedin_hashtag_core == ("#aiengineering", "#AIResearch")
+    assert config.search_max_links == 5

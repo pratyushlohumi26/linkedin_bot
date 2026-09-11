@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from telegram_bot.summarizer import _parse_thread_payload
+from telegram_bot.summarizer import (
+    _apply_hashtag_policy,
+    _parse_linkedin_variants,
+    _parse_thread_payload,
+)
 
 
 def test_parse_thread_payload_json() -> None:
@@ -30,3 +34,30 @@ def test_parse_thread_payload_rejects_non_dict() -> None:
 def test_parse_thread_payload_rejects_empty_tweet() -> None:
     with pytest.raises(ValueError, match="Invalid tweet content"):
         _parse_thread_payload('{"1": "   "}')
+
+
+def test_parse_linkedin_variants_json_payload() -> None:
+    payload = '{"A":"Post A","B":"Post B","C":"Post C"}'
+    assert _parse_linkedin_variants(payload) == {
+        "A": "Post A",
+        "B": "Post B",
+        "C": "Post C",
+    }
+
+
+def test_parse_linkedin_variants_rejects_missing_variant() -> None:
+    with pytest.raises(ValueError, match="variant"):
+        _parse_linkedin_variants('{"A":"one","B":"two"}')
+
+
+def test_apply_hashtag_policy_enforces_core_and_limit() -> None:
+    post = "Line one\nLine two #Random #AIAgents #TooMany #Extra #Noise"
+    result = _apply_hashtag_policy(
+        post_text=post,
+        core_hashtags=("#AIEngineering", "#AIResearch", "#LLM"),
+        secondary_hashtags=("#AIAgents", "#DeveloperTools", "#MachineLearning"),
+    )
+
+    hashtags = [token for token in result.split() if token.startswith("#")]
+    assert hashtags[:3] == ["#AIEngineering", "#AIResearch", "#LLM"]
+    assert len(hashtags) <= 5

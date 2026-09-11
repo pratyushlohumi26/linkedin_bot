@@ -11,3 +11,7 @@ api_key.py
 .pytest_cache/
 .ruff_cache/
 .coverage
+.runtime/
+.bot_smoke.pid
+bot_smoke.log
+

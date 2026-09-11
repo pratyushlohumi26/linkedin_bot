@@ -6,14 +6,23 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import re
+from collections.abc import Sequence
 from typing import Any
 
 from openai import AzureOpenAI, BadRequestError, OpenAI
 
 from telegram_bot.config import LLMConfig
-from telegram_bot.prompts import system_prompt_linkedin, system_prompt_x
+from telegram_bot.prompts import (
+    build_linkedin_first_comment_user_prompt,
+    build_linkedin_variant_user_prompt,
+    system_prompt_linkedin_first_comment,
+    system_prompt_linkedin_variants,
+    system_prompt_x,
+)
 
 logger = logging.getLogger(__name__)
+_HASHTAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_]+)")
 
 
 class ContentGenerator:
@@ -80,13 +89,52 @@ class ContentGenerator:
             raise ValueError("Model returned empty content.")
         return content
 
-    def generate_linkedin_post(self, blog_text: str) -> str:
+    def generate_linkedin_variants(
+        self,
+        blog_text: str,
+        *,
+        core_hashtags: Sequence[str],
+        secondary_hashtags: Sequence[str],
+    ) -> dict[str, str]:
         answer = self._complete(
-            system_prompt=system_prompt_linkedin,
-            user_message=(
-                "Here is the scraped blog post text:\n"
-                f"{blog_text}\n\n"
-                "Return only the final LinkedIn post text."
+            system_prompt=system_prompt_linkedin_variants,
+            user_message=build_linkedin_variant_user_prompt(
+                blog_text=blog_text,
+                core_hashtags=core_hashtags,
+                secondary_hashtags=secondary_hashtags,
+            ),
+        )
+        variants = _parse_linkedin_variants(answer)
+        return {
+            key: _apply_hashtag_policy(
+                post_text=value,
+                core_hashtags=core_hashtags,
+                secondary_hashtags=secondary_hashtags,
+            )
+            for key, value in variants.items()
+        }
+
+    def generate_linkedin_post(self, blog_text: str) -> str:
+        variants = self.generate_linkedin_variants(
+            blog_text,
+            core_hashtags=("#AIEngineering", "#AIResearch", "#LLM"),
+            secondary_hashtags=("#AIAgents", "#DeveloperTools", "#MachineLearning"),
+        )
+        return variants["B"]
+
+    def generate_linkedin_first_comment(
+        self,
+        *,
+        linkedin_post: str,
+        article_excerpt: str,
+        references: Sequence[dict[str, str]],
+    ) -> str:
+        answer = self._complete(
+            system_prompt=system_prompt_linkedin_first_comment,
+            user_message=build_linkedin_first_comment_user_prompt(
+                linkedin_post=linkedin_post,
+                article_excerpt=article_excerpt,
+                references=references,
             ),
         )
         return answer.replace("*", "").strip()
@@ -103,7 +151,14 @@ class ContentGenerator:
         return _parse_thread_payload(answer)
 
 
-def _parse_thread_payload(raw_payload: str) -> dict[int, str]:
+def _normalize_hashtag(tag: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "", tag.lstrip("#"))
+    if not cleaned:
+        raise ValueError(f"Invalid hashtag value: {tag!r}")
+    return f"#{cleaned}"
+
+
+def _parse_json_like(raw_payload: str) -> Any:
     payload = raw_payload.strip()
     if payload.startswith("```"):
         payload = payload.strip("`")
@@ -112,11 +167,92 @@ def _parse_thread_payload(raw_payload: str) -> dict[int, str]:
         elif payload.lower().startswith("json"):
             payload = payload[4:].strip()
 
-    data: Any
     try:
-        data = json.loads(payload)
+        return json.loads(payload)
     except json.JSONDecodeError:
-        data = ast.literal_eval(payload)
+        return ast.literal_eval(payload)
+
+
+def _parse_linkedin_variants(raw_payload: str) -> dict[str, str]:
+    data = _parse_json_like(raw_payload)
+    if not isinstance(data, dict):
+        raise ValueError("LinkedIn variants payload must be a dictionary-like object.")
+
+    parsed: dict[str, str] = {}
+    for key in ("A", "B", "C"):
+        value = data.get(key) or data.get(key.lower())
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Missing or invalid LinkedIn variant for key {key}.")
+        parsed[key] = value.replace("*", "").strip()
+
+    return parsed
+
+
+def _curate_hashtags(
+    post_text: str,
+    *,
+    core_hashtags: Sequence[str],
+    secondary_hashtags: Sequence[str],
+) -> list[str]:
+    chosen: list[str] = []
+    seen: set[str] = set()
+
+    def add_tag(tag: str) -> None:
+        normalized = _normalize_hashtag(tag)
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        chosen.append(normalized)
+
+    for tag in core_hashtags:
+        add_tag(tag)
+
+    normalized_secondary = {
+        _normalize_hashtag(tag).lower(): _normalize_hashtag(tag) for tag in secondary_hashtags
+    }
+
+    for match in _HASHTAG_RE.findall(post_text):
+        candidate = f"#{match}"
+        normalized = _normalize_hashtag(candidate)
+        secondary = normalized_secondary.get(normalized.lower())
+        if secondary:
+            add_tag(secondary)
+        if len(chosen) >= 5:
+            return chosen[:5]
+
+    for tag in secondary_hashtags:
+        if len(chosen) >= 5:
+            break
+        add_tag(tag)
+
+    return chosen[:5]
+
+
+def _apply_hashtag_policy(
+    *,
+    post_text: str,
+    core_hashtags: Sequence[str],
+    secondary_hashtags: Sequence[str],
+) -> str:
+    hashtags = _curate_hashtags(
+        post_text,
+        core_hashtags=core_hashtags,
+        secondary_hashtags=secondary_hashtags,
+    )
+
+    body = _HASHTAG_RE.sub("", post_text)
+    body = re.sub(r"[ \t]{2,}", " ", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+
+    if not hashtags:
+        return body
+
+    return f"{body}\n\n{' '.join(hashtags)}"
+
+
+def _parse_thread_payload(raw_payload: str) -> dict[int, str]:
+    data = _parse_json_like(raw_payload)
 
     if not isinstance(data, dict):
         raise ValueError("Thread payload must be a dictionary-like object.")

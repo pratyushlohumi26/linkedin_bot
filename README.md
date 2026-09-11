@@ -6,9 +6,12 @@ Turn any article/blog URL into a polished LinkedIn post and/or X thread from Tel
 
 - `.env`-driven configuration (no `api_key.py` required)
 - Supports **OpenAI** and **Azure OpenAI**
+- LinkedIn A/B/C variant generation with Telegram pick-and-post flow
+- Dev+researcher persona prompting with refined niche hashtag policy
+- Optional first-comment pipeline and optional research-link enrichment
 - Optional Telegram allowlist (`TELEGRAM_ALLOWED_USER_IDS`)
 - Polling mode and webhook mode
-- Safer thread parsing and cleaner architecture
+- Safer parsing and cleaner architecture
 
 ## Quick start
 
@@ -79,6 +82,24 @@ Set one provider:
 - `TELEGRAM_ALLOWED_USER_IDS` (comma-separated Telegram user IDs)
 - `SCRAPER_TIMEOUT_SECONDS` (default `10`)
 
+### LinkedIn reach mode settings
+
+- `LINKEDIN_HASHTAG_CORE` (reused niche tags; comma-separated)
+- `LINKEDIN_HASHTAG_SECONDARY` (rotating contextual tags)
+- `LINKEDIN_ENABLE_FIRST_COMMENT` (`false` by default)
+- `LINKEDIN_FIRST_COMMENT_DELAY_SECONDS` (default `90`)
+
+### Optional research enrichment
+
+- `ENABLE_RESEARCH_AGENT` (`false` by default)
+- `SEARCH_PROVIDER` (`tavily` currently supported)
+- `SEARCH_API_KEY`
+- `SEARCH_MAX_LINKS` (1-5, default `3`)
+
+### Optional telemetry
+
+- `PIPELINE_TELEMETRY_PATH` (default `.runtime/telemetry.jsonl`)
+
 ---
 
 ## Development workflow
@@ -140,6 +161,8 @@ telegram_bot/
   summarizer.py
   linkedin_client.py
   twitter_client.py
+  research_agent.py
+  telemetry.py
   keyboards.py
   prompts.py
 tests/
