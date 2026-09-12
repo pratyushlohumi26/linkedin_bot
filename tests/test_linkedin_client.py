@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import requests
 
-from telegram_bot.linkedin_client import LinkedinAutomate
+from telegram_bot.linkedin_client import LinkedinAutomate, build_linkedin_post_url
 
 
 def _response_with(
@@ -36,3 +36,15 @@ def test_extract_post_urn_from_payload() -> None:
     response = _response_with(payload='{"id": "urn:li:ugcPost:111"}')
 
     assert client._extract_post_urn(response) == "urn:li:ugcPost:111"
+
+
+def test_build_linkedin_post_url_from_urn() -> None:
+    assert (
+        build_linkedin_post_url("urn:li:ugcPost:12345")
+        == "https://www.linkedin.com/feed/update/urn:li:ugcPost:12345/"
+    )
+
+
+def test_build_linkedin_post_url_returns_none_for_invalid_value() -> None:
+    assert build_linkedin_post_url("https://example.com") is None
+    assert build_linkedin_post_url(None) is None

@@ -16,7 +16,7 @@ from telegram_bot.keyboards import (
     feed_type_selection,
     linkedin_variant_selection,
 )
-from telegram_bot.linkedin_client import LinkedinAutomate
+from telegram_bot.linkedin_client import LinkedinAutomate, build_linkedin_post_url
 from telegram_bot.research_agent import ResearchAgent, build_research_topic
 from telegram_bot.scraper import extract_text_from_url
 from telegram_bot.summarizer import ContentGenerator
@@ -200,13 +200,18 @@ def register_handlers(bot: TeleBot, config: AppConfig) -> None:
                 first_comment_status=first_comment_status,
             )
 
+            post_url = build_linkedin_post_url(result.post_urn)
             if config.linkedin_enable_first_comment:
-                bot.send_message(
-                    chat_id,
-                    f"LinkedIn post published successfully. First comment: {first_comment_status}.",
+                status_message = (
+                    f"LinkedIn post published successfully. First comment: {first_comment_status}."
                 )
             else:
-                bot.send_message(chat_id, "LinkedIn post published successfully.")
+                status_message = "LinkedIn post published successfully."
+
+            if post_url:
+                status_message = f"{status_message}\n\nPost URL: {post_url}"
+
+            bot.send_message(chat_id, status_message)
             return "Success"
         except Exception as err:
             logger.exception("LinkedIn publishing failed: %s", err)

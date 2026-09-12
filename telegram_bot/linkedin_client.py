@@ -18,6 +18,17 @@ class LinkedInPublishResult:
     post_urn: str | None
 
 
+def build_linkedin_post_url(post_urn: str | None) -> str | None:
+    if not post_urn:
+        return None
+
+    normalized = post_urn.strip()
+    if not normalized.startswith("urn:li:"):
+        return None
+
+    return f"https://www.linkedin.com/feed/update/{normalized}/"
+
+
 class LinkedinAutomate:
     """Small LinkedIn publisher wrapper."""
 
