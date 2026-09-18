@@ -1,44 +1,32 @@
-#!/usr/bin/env python3
-"""Inline keyboard markups for Telegram bot."""
+"""Revision-bound inline controls for review-first publishing."""
 
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from telegram_bot.drafts import Draft
+
 
 def feed_type_selection() -> InlineKeyboardMarkup:
-    """Buttons to select Twitter, LinkedIn, or Both."""
-    markup = InlineKeyboardMarkup()
-    markup.row_width = 3
+    markup = InlineKeyboardMarkup(row_width=3)
     markup.add(
-        InlineKeyboardButton("Twitter Thread", callback_data="twitter"),
-        InlineKeyboardButton("LinkedIn Post", callback_data="linkedin"),
-        InlineKeyboardButton("Both", callback_data="both"),
+        *(
+            InlineKeyboardButton(label, callback_data=f"dest:{value}")
+            for label, value in (
+                ("LinkedIn", "linkedin"),
+                ("X thread", "twitter"),
+                ("Both", "both"),
+            )
+        )
     )
     return markup
 
 
-def confirmation_selection() -> InlineKeyboardMarkup:
-    """Buttons to confirm Yes or No."""
+def draft_keyboard(draft: Draft, rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup()
-    markup.row_width = 2
-    markup.add(
-        InlineKeyboardButton("Yes", callback_data="yes"),
-        InlineKeyboardButton("No", callback_data="no"),
-    )
-    return markup
-
-
-def linkedin_variant_selection() -> InlineKeyboardMarkup:
-    """Buttons to choose among LinkedIn variants A/B/C, regenerate, or cancel."""
-    markup = InlineKeyboardMarkup()
-    markup.row_width = 3
-    markup.add(
-        InlineKeyboardButton("Post A", callback_data="linkedin_variant_a"),
-        InlineKeyboardButton("Post B", callback_data="linkedin_variant_b"),
-        InlineKeyboardButton("Post C", callback_data="linkedin_variant_c"),
-    )
-    markup.row_width = 2
-    markup.add(
-        InlineKeyboardButton("Regenerate", callback_data="linkedin_variant_regen"),
-        InlineKeyboardButton("Cancel", callback_data="linkedin_variant_cancel"),
-    )
+    for row in rows:
+        markup.row(
+            *(
+                InlineKeyboardButton(label, callback_data=f"d:{draft.id}:{draft.revision}:{action}")
+                for label, action in row
+            )
+        )
     return markup

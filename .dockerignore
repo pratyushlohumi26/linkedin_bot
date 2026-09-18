@@ -9,3 +9,7 @@ __pycache__/
 .ruff_cache/
 .openhands/
 .env
+.runtime/
+.handler-saves/
+*.log
+api_key.py

@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -30,6 +31,58 @@ class LLMConfig:
     azure_openai_api_key: str | None = None
     azure_openai_endpoint: str | None = None
     azure_openai_api_version: str = "2024-06-01"
+
+
+@dataclass(frozen=True)
+class ImageConfig:
+    enabled: bool = False
+    provider: LlmProvider = "openai"
+    model: str = "gpt-image-1-mini"
+    api_key: str | None = field(default=None, repr=False)
+    azure_endpoint: str | None = None
+    api_version: str = "2025-04-01-preview"
+    size: str = "1024x1024"
+    quality: str = "low"
+    max_generations: int = 3
+    timeout_seconds: int = 180
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"openai", "azure_openai"}:
+            raise ValueError("IMAGE_PROVIDER must be 'openai' or 'azure_openai'.")
+        if self.size not in {"1024x1024", "1536x1024", "1024x1536"}:
+            raise ValueError("IMAGE_SIZE must be 1024x1024, 1536x1024 or 1024x1536.")
+        if self.quality not in {"low", "medium", "high"}:
+            raise ValueError("IMAGE_QUALITY must be low, medium or high.")
+        _validate_int_bounds(self.max_generations, 1, 10, env_name="IMAGE_MAX_GENERATIONS")
+        _validate_int_bounds(self.timeout_seconds, 1, 600, env_name="IMAGE_TIMEOUT_SECONDS")
+        if not self.model.strip() or len(self.model) > 200:
+            raise ValueError("Image model or deployment must contain 1 to 200 characters.")
+        if self.enabled and not (self.api_key and self.api_key.strip()):
+            name = "OPENAI_API_KEY" if self.provider == "openai" else "AZURE_OPENAI_API_KEY"
+            raise ValueError(f"{name} is required when images are enabled.")
+        if self.provider == "azure_openai":
+            if self.enabled and not self.azure_endpoint:
+                raise ValueError("AZURE_OPENAI_ENDPOINT is required when Azure images are enabled.")
+            if not self.api_version.strip() or len(self.api_version) > 100:
+                raise ValueError("AZURE_OPENAI_IMAGE_API_VERSION must contain 1 to 100 characters.")
+            if self.azure_endpoint:
+                endpoint = _normalize_azure_endpoint(self.azure_endpoint)
+                try:
+                    parsed = urlsplit(endpoint)
+                    valid = (
+                        parsed.scheme == "https"
+                        and parsed.hostname
+                        and not parsed.username
+                        and not parsed.password
+                        and not parsed.query
+                        and not parsed.fragment
+                        and not parsed.path
+                    )
+                except ValueError:
+                    valid = False
+                if not valid:
+                    raise ValueError("AZURE_OPENAI_ENDPOINT must be an HTTPS base endpoint.")
+                object.__setattr__(self, "azure_endpoint", endpoint)
 
 
 @dataclass(frozen=True)
@@ -75,6 +128,9 @@ class AppConfig:
     llm: LLMConfig
     scraper_timeout_seconds: int
     allowed_user_ids: set[int]
+    images: ImageConfig = field(default_factory=ImageConfig)
+    draft_store_path: str = ".runtime/drafts.sqlite3"
+    draft_retention_days: int = 7
 
 
 def _get_env(name: str, *, required: bool = False, default: str | None = None) -> str | None:
@@ -126,6 +182,39 @@ def _parse_int(raw_value: str | None, *, default: int, env_name: str) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise ValueError(f"{env_name} must be an integer.") from exc
+
+
+def _validate_int_bounds(value: int, minimum: int, maximum: int, *, env_name: str) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"{env_name} must be an integer between {minimum} and {maximum}.")
+    return value
+
+
+def _load_image_config() -> ImageConfig:
+    enabled = _parse_bool(_get_env("LINKEDIN_ENABLE_IMAGES"), default=False)
+    provider = (_get_env("IMAGE_PROVIDER", default="openai") or "openai").lower()
+    azure = provider == "azure_openai"
+    return ImageConfig(
+        enabled=enabled,
+        provider=provider,  # type: ignore[arg-type]
+        model=(
+            _get_env("AZURE_OPENAI_IMAGE_DEPLOYMENT", required=enabled) or "gpt-image-1-mini"
+            if azure
+            else _get_env("OPENAI_IMAGE_MODEL", default="gpt-image-1-mini") or "gpt-image-1-mini"
+        ),
+        api_key=_get_env("AZURE_OPENAI_API_KEY" if azure else "OPENAI_API_KEY", required=enabled),
+        azure_endpoint=_get_env("AZURE_OPENAI_ENDPOINT", required=enabled) if azure else None,
+        api_version=_get_env("AZURE_OPENAI_IMAGE_API_VERSION", default="2025-04-01-preview")
+        or "2025-04-01-preview",
+        size=_get_env("IMAGE_SIZE", default="1024x1024") or "1024x1024",
+        quality=(_get_env("IMAGE_QUALITY", default="low") or "low").lower(),
+        max_generations=_parse_int(
+            _get_env("IMAGE_MAX_GENERATIONS"), default=3, env_name="IMAGE_MAX_GENERATIONS"
+        ),
+        timeout_seconds=_parse_int(
+            _get_env("IMAGE_TIMEOUT_SECONDS"), default=180, env_name="IMAGE_TIMEOUT_SECONDS"
+        ),
+    )
 
 
 def _normalize_webhook_path(path_value: str | None) -> str:
@@ -272,6 +361,17 @@ def load_config() -> AppConfig:
             access_token_secret=_get_env("X_ACCESS_TOKEN_SECRET"),
         ),
         llm=llm,
+        images=_load_image_config(),
+        draft_store_path=_get_env("DRAFT_STORE_PATH", default=".runtime/drafts.sqlite3")
+        or ".runtime/drafts.sqlite3",
+        draft_retention_days=_validate_int_bounds(
+            _parse_int(
+                _get_env("DRAFT_RETENTION_DAYS"), default=7, env_name="DRAFT_RETENTION_DAYS"
+            ),
+            1,
+            365,
+            env_name="DRAFT_RETENTION_DAYS",
+        ),
         scraper_timeout_seconds=scraper_timeout,
         allowed_user_ids=_parse_allowed_user_ids(_get_env("TELEGRAM_ALLOWED_USER_IDS")),
     )

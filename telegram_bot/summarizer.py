@@ -14,8 +14,10 @@ from openai import AzureOpenAI, BadRequestError, OpenAI
 
 from telegram_bot.config import LLMConfig
 from telegram_bot.prompts import (
+    build_image_brief_user_prompt,
     build_linkedin_first_comment_user_prompt,
     build_linkedin_variant_user_prompt,
+    system_prompt_image_brief,
     system_prompt_linkedin_first_comment,
     system_prompt_linkedin_variants,
     system_prompt_x,
@@ -160,6 +162,26 @@ class ContentGenerator:
         )
         return answer.replace("*", "").strip()
 
+    def generate_image_brief(
+        self, article_text: str, post_text: str, *, instructions: str = ""
+    ) -> dict[str, Any]:
+        if not isinstance(article_text, str) or not article_text.strip():
+            raise ValueError("An article is required for an image brief.")
+        if not isinstance(post_text, str) or not post_text.strip():
+            raise ValueError("A selected draft is required for an image brief.")
+        if not isinstance(instructions, str):
+            raise ValueError("Image brief instructions must be text.")
+        try:
+            answer = self._complete(
+                system_prompt=system_prompt_image_brief,
+                user_message=build_image_brief_user_prompt(
+                    article_text=article_text, post_text=post_text, instructions=instructions
+                ),
+            )
+            return _parse_image_brief(answer)
+        except Exception:
+            raise ValueError("Could not generate a valid image brief. Please try again.") from None
+
     def generate_x_thread(self, blog_text: str) -> dict[int, str]:
         answer = self._complete(
             system_prompt=system_prompt_x,
@@ -170,6 +192,49 @@ class ContentGenerator:
             ),
         )
         return _parse_thread_payload(answer)
+
+
+def _parse_image_brief(raw_payload: str) -> dict[str, Any]:
+    error = "Invalid image brief. Please regenerate the brief."
+    if not isinstance(raw_payload, str) or len(raw_payload) > 16000:
+        raise ValueError(error)
+    try:
+        data = json.loads(raw_payload)
+    except (ValueError, RecursionError):
+        raise ValueError(error) from None
+    bounds = {
+        "message": (10, 300),
+        "concept": (10, 600),
+        "prompt": (40, 3000),
+        "alt_text": (10, 1000),
+    }
+    if (
+        not isinstance(data, dict)
+        or not set(bounds) <= data.keys()
+        or data.keys() - (set(bounds) | {"source_facts"})
+    ):
+        raise ValueError(error)
+
+    def clean(value: Any, minimum: int, maximum: int) -> str:
+        if not isinstance(value, str):
+            raise ValueError(error)
+        value = value.strip()
+        if not minimum <= len(value) <= maximum or any(
+            (ord(char) < 32 and char not in "\n\t")
+            or 0x7F <= ord(char) <= 0x9F
+            or 0xD800 <= ord(char) <= 0xDFFF
+            for char in value
+        ):
+            raise ValueError(error)
+        return value
+
+    result: dict[str, Any] = {key: clean(data[key], *limit) for key, limit in bounds.items()}
+    if "source_facts" in data:
+        facts = data["source_facts"]
+        if not isinstance(facts, list) or len(facts) > 6:
+            raise ValueError(error)
+        result["source_facts"] = [clean(fact, 1, 300) for fact in facts]
+    return result
 
 
 def _normalize_hashtag(tag: str) -> str:
