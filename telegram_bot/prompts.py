@@ -29,6 +29,7 @@ Formatting constraints:
 - No markdown headings.
 - No bullet spam.
 - No asterisks.
+- Do not add authoring-tool credits, signatures, or boilerplate about how the content was generated.
 - Keep each variant <= 1300 characters before hashtags.
 
 Return strict JSON only in this schema:
@@ -51,6 +52,7 @@ Rules:
 - If links are provided, include up to 3 links with a short reason.
 - No hashtags.
 - No hype language.
+- Do not add authoring-tool credits, signatures, or boilerplate about how the content was generated.
 - Keep it human and useful.
 
 Return only the final comment text.
@@ -67,6 +69,7 @@ Requirements:
 - Each tweet should be compact and valuable.
 - Return a valid JSON object only, where keys are numeric positions and values are tweet text.
 - No markdown fences, no explanations, no extra text.
+- Do not add authoring-tool credits, signatures, or boilerplate about how the content was generated.
 
 Example output format:
 {"1": "...", "2": "...", "3": "..."}

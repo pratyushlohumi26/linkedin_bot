@@ -228,3 +228,73 @@ def test_image_brief_prompt_keeps_injected_material_as_bounded_data() -> None:
         "post_text": "selected draft",
         "instructions": "watercolor",
     }
+
+
+@pytest.mark.parametrize("kind", ["variants", "comment", "thread"])
+def test_social_generation_requests_content_without_authoring_boilerplate(monkeypatch, kind):
+    payloads = {
+        "variants": json.dumps(
+            {
+                "A": "Practical local inference.",
+                "B": "Review the trade-offs.",
+                "C": "A local deployment story.",
+            }
+        ),
+        "comment": "Concrete source context.",
+        "thread": json.dumps({"1": "First point.", "2": "Second point."}),
+    }
+    requests = []
+
+    def provider(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "test",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "text-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": payloads[kind]},
+                    }
+                ],
+            },
+        )
+
+    generator = _brief_generator(monkeypatch, provider)
+    try:
+        if kind == "variants":
+            result = generator.generate_linkedin_variants(
+                "Source article.",
+                core_hashtags=("#AI", "#Research", "#Engineering"),
+                secondary_hashtags=(),
+            )
+            assert result == {
+                key: text + "\n\n#AI #Research #Engineering"
+                for key, text in json.loads(payloads[kind]).items()
+            }
+        elif kind == "comment":
+            assert (
+                generator.generate_linkedin_first_comment(
+                    linkedin_post="Reviewed post.", article_excerpt="Source excerpt.", references=[]
+                )
+                == payloads[kind]
+            )
+        else:
+            assert generator.generate_x_thread("Source article.") == {
+                1: "First point.",
+                2: "Second point.",
+            }
+    finally:
+        generator._client.close()
+    assert len(requests) == 1
+    system = requests[0]["messages"][0]
+    assert system["role"] == "system"
+    assert (
+        "Do not add authoring-tool credits, signatures, or boilerplate about how the content was generated."
+        in system["content"]
+    )
+    assert "OpenHands" not in system["content"]

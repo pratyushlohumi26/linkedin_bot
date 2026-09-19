@@ -20,17 +20,14 @@ from telegram_bot.telemetry import TelemetryLogger
 from telegram_bot.twitter_client import prepare_thread
 
 logger = logging.getLogger(__name__)
-DISCLOSURE = "Created with an AI agent (OpenHands) on behalf of the author."
 
 
 def reviewed_post(text: str) -> str:
     text = text.strip()
     if not text:
         raise ValueError("Post text cannot be empty.")
-    if DISCLOSURE not in text:
-        text += "\n\n" + DISCLOSURE
     if len(text) > 3000:
-        raise ValueError("LinkedIn text must fit within 3,000 characters including disclosure.")
+        raise ValueError("LinkedIn text must fit within 3,000 characters.")
     return text
 
 
