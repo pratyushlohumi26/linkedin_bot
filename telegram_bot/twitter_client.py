@@ -21,16 +21,11 @@ def prepare_thread(tweet_thread: Mapping[int, str]) -> list[str]:
     result = []
     for position, (_, text) in enumerate(ordered, 1):
         prefix = f"[{position}/{len(ordered)}] "
-        suffix = (
-            "\nAI-assisted by OpenHands on behalf of the author."
-            if position == len(ordered)
-            else ""
-        )
-        budget = MAX_TWEET_LENGTH - len(prefix) - len(suffix)
+        budget = MAX_TWEET_LENGTH - len(prefix)
         body = text.strip()
         if len(body) > budget:
             body = body[: budget - 3].rstrip() + "..."
-        result.append(prefix + body + suffix)
+        result.append(prefix + body)
     return result
 
 

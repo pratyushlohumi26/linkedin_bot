@@ -19,7 +19,7 @@ from telebot.types import CallbackQuery, Message
 from telegram_bot.config import load_config
 from telegram_bot.drafts import DraftConflict
 from telegram_bot.handlers import DraftBotController
-from telegram_bot.workflow import DISCLOSURE, DraftWorkflow, reviewed_post
+from telegram_bot.workflow import DraftWorkflow, reviewed_post
 
 
 def png_bytes():
@@ -31,6 +31,7 @@ def png_bytes():
 class ServiceBoundary:
     def __init__(self):
         self.posts = []
+        self.comments = []
         self.uploads = []
         self.generations = 0
         self.image_error = False
@@ -102,6 +103,7 @@ class ServiceBoundary:
         return "Additional context."
 
     def post_comment(self, **kwargs):
+        self.comments.append(kwargs)
         return SimpleNamespace(status_code=201)
 
 
@@ -157,7 +159,7 @@ def test_nothing_posts_until_final_approval_and_exact_content_is_used(setup_flow
     draft = with_image(flow)
     original = flow.image_path(draft).read_bytes()
     assert api.posts == []
-    assert DISCLOSURE in draft.data["post_text"]
+    assert draft.data["post_text"] == "Keep AI processing local."
     approved_revision = draft.revision
     result = flow.publish(draft)
     assert result.status == "published"
@@ -185,6 +187,7 @@ def test_edit_invalidates_preview_and_requires_image_reapproval(setup_flow):
     flow, api = setup_flow
     old = with_image(flow)
     new = flow.edit(flow.request_edit(old, "text"), "A different angle on local inference.")
+    assert new.data["post_text"] == "A different angle on local inference."
     assert not flow.image_matches(new)
     with pytest.raises(DraftConflict):
         flow.publish(old)
@@ -335,16 +338,37 @@ def test_disabled_images_preserve_text_only_and_x_review(setup_flow):
     assert api.uploads == []
     x_draft = selected(flow, "twitter")
     assert api.thread is None
+    assert x_draft.data["x_thread"] == [
+        "[1/2] Local inference can avoid sending inputs to a server.",
+        "[2/2] Review the trade-offs.",
+    ]
     assert flow.publish(x_draft).status == "published"
     assert api.thread == x_draft.data["x_thread"]
 
 
-def test_post_bounds_and_disclosure():
-    assert reviewed_post(reviewed_post("Example")) == reviewed_post("Example")
+@pytest.mark.parametrize("text", ["Example", "OpenHands is an AI agent for software development."])
+def test_reviewed_post_preserves_content_without_adding_attribution(text):
+    assert reviewed_post("  " + text + "\n") == text
+    assert reviewed_post(reviewed_post(text)) == text
+
+
+def test_post_bounds_use_the_full_linkedin_budget():
+    assert reviewed_post("x" * 3000) == "x" * 3000
     with pytest.raises(ValueError):
-        reviewed_post("")
+        reviewed_post(" ")
     with pytest.raises(ValueError):
-        reviewed_post("x" * 3000)
+        reviewed_post("x" * 3001)
+
+
+def test_first_comment_publishes_only_generated_content(setup_flow):
+    flow, api = setup_flow
+    flow.config = replace(
+        flow.config, linkedin_enable_first_comment=True, linkedin_first_comment_delay_seconds=0
+    )
+    flow.publisher.config = flow.config
+    result = flow.publish(selected(flow))
+    assert result.data["first_comment_status"] == "posted"
+    assert api.comments == [{"post_urn": "urn:li:share:123", "comment_text": "Additional context."}]
 
 
 class TelegramBoundary(TeleBot):

@@ -44,7 +44,6 @@ class DraftPublisher:
                 article_excerpt=draft.data["article_text"],
                 references=references,
             )
-            comment += "\n\nCreated with an AI agent (OpenHands) on behalf of the author."
             if self.config.linkedin_first_comment_delay_seconds:
                 time.sleep(self.config.linkedin_first_comment_delay_seconds)
             response = self.linkedin.post_comment(

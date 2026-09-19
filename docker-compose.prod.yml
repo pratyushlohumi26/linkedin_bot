@@ -7,6 +7,8 @@ services:
     image: linkedin-bot:prod
     env_file:
       - .env
+    environment:
+      SCRAPER_BROWSER_ENABLED: "false"
     command: ["python", "main.py"]
     restart: unless-stopped
     volumes:

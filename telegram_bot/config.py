@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
+from telegram_bot.scraper_config import ScraperConfig, load_scraper_config
+
 LlmProvider = Literal["openai", "azure_openai"]
 TelegramMode = Literal["polling", "webhook"]
 
@@ -129,6 +131,7 @@ class AppConfig:
     scraper_timeout_seconds: int
     allowed_user_ids: set[int]
     images: ImageConfig = field(default_factory=ImageConfig)
+    scraper: ScraperConfig = field(default_factory=ScraperConfig)
     draft_store_path: str = ".runtime/drafts.sqlite3"
     draft_retention_days: int = 7
 
@@ -362,6 +365,9 @@ def load_config() -> AppConfig:
         ),
         llm=llm,
         images=_load_image_config(),
+        scraper=load_scraper_config(
+            allowed_user_ids=_parse_allowed_user_ids(_get_env("TELEGRAM_ALLOWED_USER_IDS"))
+        ),
         draft_store_path=_get_env("DRAFT_STORE_PATH", default=".runtime/drafts.sqlite3")
         or ".runtime/drafts.sqlite3",
         draft_retention_days=_validate_int_bounds(

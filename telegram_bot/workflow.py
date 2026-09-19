@@ -6,30 +6,28 @@ import hashlib
 import logging
 import shutil
 from pathlib import Path
-from urllib.parse import urlparse
+from uuid import uuid4
 
+from telegram_bot.article_extractor import pasted_article
 from telegram_bot.config import AppConfig
 from telegram_bot.drafts import TERMINAL_STATUSES, Draft, DraftConflict, DraftStore
 from telegram_bot.image_generator import ImageGenerator, validate_image_bytes
 from telegram_bot.linkedin_client import LinkedinAutomate
 from telegram_bot.publisher import DraftPublisher
-from telegram_bot.scraper import extract_text_from_url
+from telegram_bot.scraper import ArticleScraper, ScrapeResult, source_result
 from telegram_bot.summarizer import ContentGenerator
 from telegram_bot.telemetry import TelemetryLogger
 from telegram_bot.twitter_client import prepare_thread
 
 logger = logging.getLogger(__name__)
-DISCLOSURE = "Created with an AI agent (OpenHands) on behalf of the author."
 
 
 def reviewed_post(text: str) -> str:
     text = text.strip()
     if not text:
         raise ValueError("Post text cannot be empty.")
-    if DISCLOSURE not in text:
-        text += "\n\n" + DISCLOSURE
     if len(text) > 3000:
-        raise ValueError("LinkedIn text must fit within 3,000 characters including disclosure.")
+        raise ValueError("LinkedIn text must fit within 3,000 characters.")
     return text
 
 
@@ -47,8 +45,10 @@ class DraftWorkflow:
         image_generator=None,
         linkedin=None,
         twitter=None,
+        scraper=None,
     ):
         self.config = config
+        self.scraper = scraper or ArticleScraper(config.scraper)
         self.store = store or DraftStore(config.draft_store_path)
         self.generator = generator or ContentGenerator(config.llm)
         self.image_generator = image_generator or (
@@ -74,26 +74,154 @@ class DraftWorkflow:
     def fail_generation(self, draft: Draft, status: str, notice: str) -> Draft:
         return self.store.update(draft, status=status, changes={"notice": notice})
 
+    @staticmethod
+    def _clear_source() -> dict:
+        return {
+            key: None
+            for key in (
+                "article_text",
+                "source_metadata",
+                "source_hash",
+                "source_chunks",
+                "source_session",
+                "variants",
+                "x_thread",
+                "post_text",
+                "selected_key",
+                "brief",
+                "image_path",
+                "image_sha256",
+                "image_for_text_hash",
+                "image_alt_text",
+                "image_asset_urn",
+                "image_instructions",
+                "image_needs_review",
+                "approved_revision",
+                "linkedin_status",
+                "twitter_status",
+                "linkedin_urn",
+                "linkedin_url",
+                "twitter_url",
+                "first_comment_status",
+            )
+        }
+
+    def replace_source(self, draft: Draft) -> Draft:
+        self.require(
+            draft, "source_review", "source_recovery", "awaiting_source_text", "review", "variants"
+        )
+        return self.store.update(
+            draft,
+            status="awaiting_url",
+            changes={
+                **self._clear_source(),
+                "source_url": "",
+                "notice": "Send a new public URL. Previous generated content and approvals were invalidated.",
+            },
+        )
+
     def scrape(self, draft: Draft, url: str) -> Draft:
-        self.require(draft, "awaiting_url")
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Send a valid http/https article URL.")
-        draft = self.store.update(draft, status="scraping")
+        self.require(draft, "awaiting_url", "source_recovery")
+        if draft.status == "source_recovery" and not draft.data.get("source_metadata", {}).get(
+            "retryable"
+        ):
+            raise ValueError("This failure is not retryable. Paste the text or choose another URL.")
+        draft = self.store.update(
+            draft,
+            status="scraping",
+            changes={**self._clear_source(), "source_url": url, "notice": ""},
+        )
+        result = self.scraper.scrape(url)
         try:
-            article = extract_text_from_url(
-                url, timeout_seconds=self.config.scraper_timeout_seconds
+            self.telemetry.record(
+                "source_fetch",
+                draft_id=draft.id,
+                status=result.status,
+                method=result.method,
+                elapsed_seconds=result.elapsed_seconds,
+                attempts=result.attempts,
+                text_chars=len(result.text),
+                cached=result.cached,
             )
-            if not article:
-                raise ValueError("No article text found")
         except Exception:
-            return self.fail_generation(
-                draft, "awaiting_url", "Could not read that article. Send another URL."
-            )
+            logger.warning("Source telemetry unavailable; retaining the retrieval result")
+        if result.usable:
+            return self._accept_source(draft, result)
+        return self.store.update(
+            draft,
+            status="source_recovery",
+            changes={"source_metadata": result.metadata(), "notice": result.error},
+        )
+
+    def _accept_source(self, draft: Draft, result: ScrapeResult) -> Draft:
         return self.store.update(
             draft,
             status="source_review",
-            changes={"source_url": url, "article_text": article[:60000], "notice": ""},
+            changes={
+                "article_text": result.text,
+                "source_url": result.requested_url,
+                "source_metadata": result.metadata(),
+                "source_hash": result.content_hash,
+                "source_chunks": None,
+                "source_session": None,
+                "notice": "Inspect the recovered source before generating drafts. Nothing has been published.",
+            },
+        )
+
+    def begin_source_text(self, draft: Draft) -> Draft:
+        self.require(draft, "awaiting_url", "source_recovery", "source_review")
+        return self.store.update(
+            draft,
+            status="awaiting_source_text",
+            changes={
+                **self._clear_source(),
+                "source_session": uuid4().hex,
+                "source_chunks": [],
+                "notice": "Paste the article in one or more messages, or upload a UTF-8 .txt file. Press Done when complete.",
+            },
+        )
+
+    def append_source_text(self, draft: Draft, text: str, *, chunk_id: int) -> Draft:
+        self.require(draft, "awaiting_source_text")
+        clean = pasted_article(text, max_text_chars=self.config.scraper.max_text_chars).text
+        session = draft.data.get("source_session")
+        for _ in range(5):
+            self.require(draft, "awaiting_source_text")
+            if draft.data.get("source_session") != session:
+                raise DraftConflict(
+                    "Source collection changed. Use /resume before sending more text."
+                )
+            chunks = list(draft.data.get("source_chunks") or [])
+            if any(chunk["id"] == chunk_id for chunk in chunks):
+                return draft
+            chunks.append({"id": chunk_id, "text": clean})
+            chunks.sort(key=lambda item: item["id"])
+            if (
+                len(chunks) > 100
+                or len("\n\n".join(chunk["text"] for chunk in chunks))
+                > self.config.scraper.max_text_chars
+            ):
+                raise ValueError(
+                    f"Source exceeds the {self.config.scraper.max_text_chars:,}-character/100-chunk limit. Start again with a shorter article."
+                )
+            try:
+                return self.store.update(
+                    draft,
+                    changes={
+                        "source_chunks": chunks,
+                        "notice": "Text saved. Add more or press Done to review the source.",
+                    },
+                )
+            except DraftConflict:
+                draft = self.store.get(draft.id, draft.chat_id, draft.user_id)
+        raise DraftConflict("Source changed repeatedly. Use /resume and resend the last chunk.")
+
+    def finish_source_text(self, draft: Draft) -> Draft:
+        self.require(draft, "awaiting_source_text")
+        text = "\n\n".join(chunk["text"] for chunk in (draft.data.get("source_chunks") or []))
+        article = pasted_article(text, max_text_chars=self.config.scraper.max_text_chars)
+        return self._accept_source(
+            draft, source_result(article, draft.data.get("source_url", ""), method="user_supplied")
         )
 
     def generate_variants(self, draft: Draft) -> Draft:
@@ -178,7 +306,7 @@ class DraftWorkflow:
             brief = self.generator.generate_image_brief(
                 draft.data["article_text"],
                 draft.data["post_text"],
-                instructions=draft.data.get("image_instructions", ""),
+                instructions=draft.data.get("image_instructions") or "",
             )
         except Exception as exc:
             logger.warning("Visual brief failed (%s)", type(exc).__name__)

@@ -7,3 +7,4 @@ python-dotenv>=1.0.1
 requests>=2.31.0
 tweepy>=4.14.0
 uvicorn>=0.35.0
+trafilatura>=2.0.0

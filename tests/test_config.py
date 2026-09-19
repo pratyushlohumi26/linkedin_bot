@@ -7,7 +7,7 @@ import pytest
 from dotenv import load_dotenv
 
 from telegram_bot import config as config_module
-from telegram_bot.config import ImageConfig, load_config
+from telegram_bot.config import ImageConfig, ScraperConfig, load_config
 
 ENV_KEYS = [
     "TELEGRAM_TOKEN",
@@ -62,7 +62,9 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text("")
     monkeypatch.setattr(config_module, "load_dotenv", partial(load_dotenv, dotenv_path=dotenv_path))
-    for key in ENV_KEYS:
+    for key in set(ENV_KEYS) | {
+        key for key in config_module.os.environ if key.startswith("SCRAPER_")
+    }:
         monkeypatch.delenv(key, raising=False)
 
 
@@ -300,3 +302,61 @@ def test_azure_image_endpoint_validation_is_safe(
 def test_direct_image_config_rejects_non_integer_limits(field: str, value) -> None:
     with pytest.raises(ValueError):
         ImageConfig(**{field: value})
+
+
+def test_scraper_defaults_and_environment(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_TOKEN", "123456:test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("SCRAPER_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("SCRAPER_FEED_URLS", '{"example.org": ["https://example.org/feed.xml"]}')
+    config = load_config()
+    assert config.scraper.mode == "layered"
+    assert not config.scraper.browser_enabled
+    assert config.scraper.max_attempts == 3
+    assert config.scraper.feed_urls["example.org"] == ["https://example.org/feed.xml"]
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("SCRAPER_MODE", "stealth"),
+        ("SCRAPER_MAX_ATTEMPTS", "0"),
+        ("SCRAPER_TOTAL_TIMEOUT_SECONDS", "999"),
+        ("SCRAPER_MAX_RESPONSE_BYTES", "100"),
+        ("SCRAPER_TIMEOUT_SECONDS", "0"),
+        ("SCRAPER_MIN_INTERVAL_SECONDS", "nan"),
+        ("SCRAPER_BROWSER_ENABLED", "perhaps"),
+        ("SCRAPER_FEED_URLS", "[]"),
+        ("SCRAPER_FEED_URLS", '{"example.org": "https://example.org/feed"}'),
+    ],
+)
+def test_rejects_invalid_scraper_settings(monkeypatch, key, value):
+    monkeypatch.setenv("TELEGRAM_TOKEN", "123456:test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError):
+        load_config()
+
+
+def test_browser_requires_allowlist_and_dedicated_secret(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_TOKEN", "123456:test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("SCRAPER_BROWSER_ENABLED", "true")
+    with pytest.raises(ValueError, match="TELEGRAM_ALLOWED_USER_IDS"):
+        load_config()
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    with pytest.raises(ValueError, match="SCRAPER_BROWSER_TOKEN"):
+        load_config()
+    monkeypatch.setenv("SCRAPER_BROWSER_TOKEN", "nonproduction-renderer-secret-123456")
+    config = load_config()
+    assert config.scraper.browser_enabled
+    assert "nonproduction-renderer-secret" not in repr(config.scraper)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["file:///tmp/a", "http://user:password@host", "http://host/?secret=value", "http://host/path"],
+)
+def test_browser_service_endpoint_must_be_clean_base_url(endpoint):
+    with pytest.raises(ValueError):
+        ScraperConfig(browser_url=endpoint)
