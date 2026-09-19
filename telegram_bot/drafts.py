@@ -14,6 +14,7 @@ from typing import Any
 TERMINAL_STATUSES = {"published", "partial", "uncertain", "cancelled", "expired"}
 BUSY_STATUSES = {
     "scraping",
+    "reading_source",
     "generating_text",
     "generating_brief",
     "generating_image",
@@ -151,7 +152,7 @@ class DraftStore:
     def recover_interrupted(self) -> int:
         with self.connection() as db:
             rows = db.execute(
-                "SELECT * FROM drafts WHERE status IN ('scraping','generating_text','generating_brief','generating_image','publishing')"
+                "SELECT * FROM drafts WHERE status IN ('scraping','reading_source','generating_text','generating_brief','generating_image','publishing')"
             ).fetchall()
         recovered = 0
         for row in rows:
@@ -182,10 +183,20 @@ class DraftStore:
                     status = "partial"
                 else:
                     status = "review"
+            elif draft.status == "reading_source":
+                status = "awaiting_source_text"
+                changes["notice"] = (
+                    "Text-file reading was interrupted. Previously saved parts remain; upload the file again."
+                )
+            elif draft.status == "scraping":
+                status = "source_recovery"
+                changes["source_metadata"] = {"status": "interrupted", "retryable": True}
             elif draft.data.get("post_text") or draft.data.get("x_thread"):
                 status = "review"
             elif draft.data.get("variants"):
                 status = "variants"
+            elif draft.data.get("article_text"):
+                status = "source_review"
             else:
                 status = "awaiting_url"
             try:
@@ -200,7 +211,7 @@ class DraftStore:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = db.execute(
-                "SELECT id FROM drafts WHERE updated_at < ? AND status NOT IN ('scraping','generating_text','generating_brief','generating_image','publishing')",
+                "SELECT id FROM drafts WHERE updated_at < ? AND status NOT IN ('scraping','reading_source','generating_text','generating_brief','generating_image','publishing')",
                 (cutoff,),
             ).fetchall()
             ids = [row["id"] for row in rows]

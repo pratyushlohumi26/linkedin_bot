@@ -1,0 +1,7 @@
+**
+!app.py
+!egress_proxy.py
+!requirements.txt
+!Dockerfile
+!Dockerfile.proxy
+!.dockerignore

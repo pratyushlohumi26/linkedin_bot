@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from threading import BoundedSemaphore
 
 from telebot import TeleBot, util
@@ -12,6 +13,7 @@ from telebot.types import CallbackQuery, Message
 from telegram_bot.config import AppConfig
 from telegram_bot.drafts import BUSY_STATUSES, TERMINAL_STATUSES, Draft, DraftConflict
 from telegram_bot.keyboards import draft_keyboard, feed_type_selection
+from telegram_bot.source_upload import download_text_document, validate_text_document
 from telegram_bot.workflow import DraftWorkflow
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ class DraftBotController:
         bot.register_message_handler(self.resume, commands=["resume"])
         bot.register_message_handler(self.cancel, commands=["cancel"])
         bot.register_message_handler(self.receive_text, content_types=["text"])
+        bot.register_message_handler(self.receive_document, content_types=["document"])
         bot.register_callback_query_handler(self.callback, func=lambda call: True)
 
     def close(self):
@@ -91,6 +94,12 @@ class DraftBotController:
         try:
             if draft.status == "awaiting_url":
                 self.submit(draft, lambda: self.flow.scrape(draft, (message.text or "").strip()))
+            elif draft.status == "awaiting_source_text":
+                self.safe_present(
+                    self.flow.append_source_text(
+                        draft, message.text or "", chunk_id=message.message_id
+                    )
+                )
             elif draft.status in {"editing_text", "editing_idea"}:
                 self.safe_present(self.flow.edit(draft, message.text or ""))
             else:
@@ -98,6 +107,36 @@ class DraftBotController:
                     message.chat.id,
                     "Use the draft buttons or /resume. To replace text, choose Edit text first.",
                 )
+        except (ValueError, DraftConflict) as exc:
+            self.bot.send_message(message.chat.id, str(exc))
+
+    def receive_document(self, message: Message):
+        if not self.allowed(message.from_user.id if message.from_user else None, message.chat.id):
+            return
+        draft = self.store.latest(message.chat.id, message.from_user.id)
+        if not draft:
+            self.bot.send_message(message.chat.id, "Use /start_post first.")
+            return
+        try:
+            validate_text_document(message.document, self.config.scraper.max_text_chars)
+            if draft.status in {"awaiting_url", "source_recovery"}:
+                draft = self.flow.begin_source_text(draft)
+            self.flow.require(draft, "awaiting_source_text")
+
+            def download():
+                pending = self.store.update(draft, status="reading_source")
+                try:
+                    text = download_text_document(
+                        self.bot, message.document, self.config.scraper.max_text_chars
+                    )
+                except ValueError as exc:
+                    return self.store.update(
+                        pending, status="awaiting_source_text", changes={"notice": str(exc)}
+                    )
+                pending = self.store.update(pending, status="awaiting_source_text")
+                return self.flow.append_source_text(pending, text, chunk_id=message.message_id)
+
+            self.submit(draft, download)
         except (ValueError, DraftConflict) as exc:
             self.bot.send_message(message.chat.id, str(exc))
 
@@ -189,8 +228,24 @@ class DraftBotController:
             elif action == "back":
                 result = self.flow.abort_edit(draft)
             elif action == "source":
-                self.flow.require(draft, "source_review")
-                result = self.store.update(draft, status="awaiting_url")
+                result = self.flow.replace_source(draft)
+            elif action == "paste":
+                result = self.flow.begin_source_text(draft)
+            elif action == "source_done":
+                result = self.flow.finish_source_text(draft)
+            elif action == "source_retry":
+                self.submit(draft, lambda: self.flow.scrape(draft, draft.data["source_url"]))
+                return
+            elif action == "source_full":
+                self.flow.require(draft, "source_review", "review", "variants")
+                document = BytesIO(draft.data["article_text"].encode("utf-8"))
+                document.name = "article-source.txt"
+                self.bot.send_document(
+                    chat_id,
+                    document,
+                    caption=f"Complete saved source — draft {draft.id}, version {draft.revision}",
+                )
+                return
             elif action in {"variants", "brief", "generate", "publish"}:
                 operations = {
                     "variants": self.flow.generate_variants,
@@ -276,16 +331,72 @@ class DraftBotController:
             )
             return
         if draft.status == "awaiting_url":
-            self.bot.send_message(chat, title + "\nSend the public article URL.")
-            return
-        if draft.status == "source_review":
             self.bot.send_message(
                 chat,
-                title + "\nScraped excerpt:\n\n" + draft.data["article_text"][:700],
+                title + "\nSend the public article URL, or supply article text yourself.",
+                reply_markup=draft_keyboard(
+                    draft, [[("Paste text / upload .txt", "paste"), ("Cancel", "cancel")]]
+                ),
+            )
+            return
+        if draft.status == "source_recovery":
+            rows = [
+                [("Paste text / upload .txt", "paste")],
+                [("Use another URL", "source"), ("Cancel", "cancel")],
+            ]
+            if (draft.data.get("source_metadata") or {}).get("retryable"):
+                rows.insert(0, [("Retry fetching", "source_retry")])
+            self.bot.send_message(
+                chat,
+                title + "\nNo article body was retrieved. Choose a recovery option.",
+                reply_markup=draft_keyboard(draft, rows),
+            )
+            return
+        if draft.status == "awaiting_source_text":
+            chunks = draft.data.get("source_chunks") or []
+            size = len("\n\n".join(chunk["text"] for chunk in chunks))
+            rows = [[("Done — review source", "source_done")]] if chunks else []
+            rows.append([("Use another URL", "source"), ("Cancel", "cancel")])
+            self.bot.send_message(
+                chat,
+                title
+                + f"\nSaved {len(chunks)} part(s), {size:,}/{self.config.scraper.max_text_chars:,} characters.\nPaste more text or upload a UTF-8 .txt file. Press Done only after all parts are saved.",
+                reply_markup=draft_keyboard(draft, rows),
+            )
+            return
+        if draft.status == "source_review":
+            meta = draft.data.get("source_metadata") or {}
+            lines = [
+                title,
+                "Source review",
+                "Title: " + str(meta.get("title") or "Not supplied")[:250],
+                "Method: " + str(meta.get("method", "saved source")),
+                "Completeness: " + str(meta.get("completeness", "unknown")),
+                f"Characters: {len(draft.data['article_text']):,}",
+            ]
+            if draft.data.get("source_url"):
+                lines.append("Original URL: " + draft.data["source_url"][:600])
+            if meta.get("final_url") and meta["final_url"] != draft.data.get("source_url"):
+                lines.append("Retrieved from: " + meta["final_url"][:600])
+            lines.extend("Warning: " + warning[:250] for warning in meta.get("warnings", [])[:4])
+            lines.append(
+                "\nExcerpt (download the full source to inspect all text):\n"
+                + draft.data["article_text"][:700]
+            )
+            label = (
+                "Generate drafts from this source"
+                if meta.get("status") != "partial"
+                else "Use this partial/unverified source"
+            )
+            self.bot.send_message(
+                chat,
+                "\n".join(lines),
                 reply_markup=draft_keyboard(
                     draft,
                     [
-                        [("Generate drafts", "variants"), ("Different URL", "source")],
+                        [("Read full source (.txt)", "source_full")],
+                        [(label, "variants")],
+                        [("Replace with pasted text", "paste"), ("Different URL", "source")],
                         [("Cancel", "cancel")],
                     ],
                 ),
@@ -395,6 +506,7 @@ class DraftBotController:
             rows.append([("Remove image", "remove")])
             if image_available:
                 rows[-1].append(("Download original", "original"))
+        rows.append([("Replace source", "source"), ("Read source", "source_full")])
         rows.append([("Cancel", "cancel")])
         count = draft.data.get("image_generations", 0)
         self.bot.send_message(

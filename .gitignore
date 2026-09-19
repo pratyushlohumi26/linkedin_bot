@@ -14,4 +14,4 @@ api_key.py
 .runtime/
 .bot_smoke.pid
 bot_smoke.log
-
+.openhands/
